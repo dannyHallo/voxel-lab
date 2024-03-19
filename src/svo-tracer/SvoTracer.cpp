@@ -123,8 +123,8 @@ void SvoTracer::onSwapchainResize() {
 void SvoTracer::_createTaaSamplingOffsets() {
   _subpixOffsets.resize(_taaSamplingOffsetSize);
   for (int i = 0; i < _taaSamplingOffsetSize; i++) {
-    _subpixOffsets[i] = {halton(2, i + 1) - 0.5F, halton(3, i + 1) - 0.5F};
-    // _subpixOffsets[i] = {0, 0};
+    // _subpixOffsets[i] = {halton(2, i + 1) - 0.5F, halton(3, i + 1) - 0.5F};
+    _subpixOffsets[i] = {0, 0};
   }
 }
 
