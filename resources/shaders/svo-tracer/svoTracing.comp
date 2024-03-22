@@ -5,6 +5,15 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 #include "../include/svoTracerDescriptorSetLayouts.glsl"
 
+const uint kNumOutScatter = 4;
+const uint kNumInScatter  = 100;
+// const float R_INNER        = 1.0;
+// const float R              = R_INNER + 0.5;
+const float kAtmosHeight = 10;
+
+#include "../include/atmos.glsl"
+
+#include "../include/atmos.glsl"
 #include "../include/ddaMarching.glsl"
 #include "../include/definitions.glsl"
 #include "../include/packer.glsl"
@@ -250,13 +259,15 @@ bool cascadedMarching(out float oT, out uint oIter, out vec3 oColor, out vec3 oP
   return hitVoxel;
 }
 
-vec3 dayLightCalc(vec3 d) {
+vec3 getSunDir() {
   float sunAngleA = environmentUbo.data.sunAngleA * kDeg2Rad;
   float sunAngleB = environmentUbo.data.sunAngleB * kDeg2Rad;
+  return vec3(sin(sunAngleA) * cos(sunAngleB), cos(sunAngleA), sin(sunAngleA) * sin(sunAngleB));
+}
+
+vec3 dayLightCalc(vec3 d) {
   float sunSize   = environmentUbo.data.sunSize;
-  float angleDiff = max(0, pow(dot(d, vec3(sin(sunAngleA) * cos(sunAngleB), cos(sunAngleA),
-                                           sin(sunAngleA) * sin(sunAngleB))),
-                               sunSize));
+  float angleDiff = max(0, pow(dot(d, getSunDir()), sunSize));
   return environmentUbo.data.sunLuminance * environmentUbo.data.sunColor * angleDiff;
 }
 
@@ -353,11 +364,112 @@ bool tracePrimary(out float oT, out uint oPrimaryRayIterUsed, out vec3 oColor, o
   return true;
 }
 
+float rayAtmos(vec3 p, vec3 d, float atmosHeight) {
+  // this only handles the simplest case: a flat atmosphere, the player is assumed to be below the
+  // atmosphere
+  if (d.y <= 0) {
+    return -1;
+  }
+  if (p.y > atmosHeight || p.y < 0) {
+    return -1;
+  }
+  return (atmosHeight - p.y) / d.y;
+}
+
+// F = 3 / (16 * PI) * ( 1 + c^2 )
+float rayleighPhaseFunction(float cc) { return (3.0 / 16.0 / kPi) * (1.0 + cc); }
+
+// float density(vec3 p, float ph) { return exp(-max(length(p) - R_INNER, 0.0) / ph); }
+
+// float density(vec3 p, float ph) { return exp(-max(p.y, 0.0) / ph); }
+
+float density(vec3 p, float densityFalloff) {
+  float height   = p.y;
+  float height01 = height / kAtmosHeight;
+  return exp(-height01 * densityFalloff) * (1 - height01);
+}
+
+float opticDepth(vec3 p, vec3 q, float densityFalloff) {
+  vec3 stepIncrement = (q - p) / float(kNumOutScatter);
+  vec3 v             = p + stepIncrement * 0.5;
+
+  float sum = 0.0;
+  for (int i = 0; i < kNumOutScatter; i++) {
+    sum += density(v, densityFalloff);
+    v += stepIncrement;
+  }
+  sum *= length(stepIncrement);
+
+  return sum;
+}
+
+vec3 inScatter(vec3 o, vec3 d, vec3 sunDir) {
+  const float kDensityFalloff = 4;
+  const vec3 kRay             = vec3(3.8, 13.5, 33.1);
+
+  vec3 sumRay = vec3(0.0);
+  float nRay0 = 0.0;
+
+  float totalLen = rayAtmos(o, d, kAtmosHeight);
+  if (totalLen < 0.0) {
+    return vec3(0.1);
+  }
+
+  float stepLen      = totalLen / float(kNumInScatter);
+  vec3 stepIncrement = d * stepLen;
+  vec3 v             = o + d * (stepLen * 0.5);
+
+  // const int retStep =80;
+  // for (int i = 0; i < kNumInScatter; i++, v += stepIncrement) {
+  //   if (i < retStep) {
+  //     continue;
+  //   }
+  //   float den = density(v, kDensityFalloff);
+  //   return vec3(den);
+  // }
+
+  for (int i = 0; i < kNumInScatter; i++, v += stepIncrement) {
+    float dRay = density(v, kDensityFalloff) * stepLen;
+
+    nRay0 += dRay;
+
+    float f = rayAtmos(v, sunDir, kAtmosHeight);
+    vec3 u  = v + sunDir * f;
+
+    float nRay1 = opticDepth(v, u, kDensityFalloff);
+
+    vec3 att = exp(-(nRay0 + nRay1) * kRay);
+
+    sumRay += dRay * att;
+  }
+
+  float c      = dot(d, -sunDir);
+  float cc     = c * c;
+  vec3 scatter = sumRay * kRay * rayleighPhaseFunction(cc);
+
+  return 1000.0 * scatter;
+}
+
+void atmosTest() {
+  // ray gen
+  vec3 o, d;
+  rayGen(o, d, vec2(0));
+
+  vec3 I = inScatter(o, d, getSunDir());
+  // I      = pow(I, vec3(1.0 / 2.2));
+
+  uint packedColor = packRGBE(I);
+  imageStore(rawImage, ivec2(gl_GlobalInvocationID.xy), uvec4(packedColor, 0, 0, 0));
+}
+
 void main() {
   ivec2 uv = ivec2(gl_GlobalInvocationID.xy);
   if (any(greaterThanEqual(uv, ivec2(renderInfoUbo.data.lowResSize)))) {
     return;
   }
+
+  atmosTest();
+  return;
 
   // seed gen
   uvec3 seed = getSeed();

@@ -7,6 +7,8 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 #include "../include/svoTracerDescriptorSetLayouts.glsl"
 
+#include "../include/packer.glsl"
+
 ivec2 highResToMidRes(ivec2 highResUv) {
   float ratio = float(renderInfoUbo.data.midResSize.x) / float(renderInfoUbo.data.highResSize.x);
   return ivec2(vec2(highResUv) * ratio);
@@ -34,20 +36,22 @@ vec3 getDitherMask(ivec2 screenSpaceUv) {
   return 0.5 / 255.0 + dither_shift_RGB;
 }
 
+#define RAW_DIRECT_OUTPUT
+
 void main() {
   ivec2 uv = ivec2(gl_GlobalInvocationID.xy);
   if (any(greaterThanEqual(uv, ivec2(renderInfoUbo.data.highResSize)))) {
     return;
   }
 
-  // #ifdef RAW_DIRECT_OUTPUT
-  //   if (any(greaterThanEqual(uv, ivec2(renderInfoUbo.data.lowResSize)))) {
-  //     return;
-  //   }
-  //   vec3 readingCol = unpackRGBE(imageLoad(rawImage, uv).x).rgb;
-  //   imageStore(renderTargetImage, uv, vec4(readingCol.zyx, 1));
-  //   return;
-  // #endif
+#ifdef RAW_DIRECT_OUTPUT
+  if (any(greaterThanEqual(uv, ivec2(renderInfoUbo.data.lowResSize)))) {
+    return;
+  }
+  vec3 readingCol = unpackRGBE(imageLoad(rawImage, uv).x).rgb;
+  imageStore(renderTargetImage, uv, vec4(readingCol.bgr, 1));
+  return;
+#endif
 
   ivec2 midResUv = highResToMidRes(uv);
   vec3 color     = imageLoad(taaImage, midResUv).rgb;
